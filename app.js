@@ -8,8 +8,27 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   'use strict';
 
   // ── Config ──────────────────────────────────────────────────────────────
-  const TARGET_LAT = 55.69162107686692;
-  const TARGET_LNG = 12.558723441754955;
+  const params = new URLSearchParams(window.location.search);
+  const locationId = params.get('location');
+
+  let TARGET_LAT = 55.69162107686692;
+  let TARGET_LNG = 12.558723441754955;
+  let locationName = 'Nørrebro';
+
+  if (locationId) {
+    try {
+      const locRes = await fetch('public/locations.json');
+      const locations = await locRes.json();
+      const loc = locations.find(l => String(l.id) === locationId);
+      if (loc) {
+        TARGET_LAT = loc.lat;
+        TARGET_LNG = loc.lng;
+        locationName = loc.name;
+      }
+    } catch (_) { /* fall back to defaults */ }
+  }
+  document.title = `SønSpot — ${locationName}`;
+
   const DSM_URL    = 'public/dsm-norrebro.png';
   const META_URL   = 'public/dsm-meta.json';
   const SUN_DIST   = 200;
@@ -59,6 +78,54 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     heights[i] = h;
     if (h < minH) minH = h;
     if (h > maxH) maxH = h;
+  }
+
+  // ── Building Detection ──────────────────────────────────────────────────
+  const BUILDING_THRESHOLD = 3;
+  const MIN_BUILDING_PIXELS = 8;
+  const isBuilding = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    if (heights[i] - minH > BUILDING_THRESHOLD) isBuilding[i] = 1;
+  }
+
+  const clusterVisited = new Uint8Array(W * H);
+  const buildingClusters = [];
+
+  for (let i = 0; i < W * H; i++) {
+    if (!isBuilding[i] || clusterVisited[i]) continue;
+    const cluster = [];
+    const stack = [i];
+    let cMinCol = W, cMaxCol = 0, cMinRow = H, cMaxRow = 0;
+    let hSum = 0, hMax = -Infinity;
+
+    while (stack.length > 0) {
+      const idx = stack.pop();
+      if (clusterVisited[idx]) continue;
+      clusterVisited[idx] = 1;
+      const col = idx % W;
+      const row = Math.floor(idx / W);
+      cluster.push(idx);
+      if (col < cMinCol) cMinCol = col;
+      if (col > cMaxCol) cMaxCol = col;
+      if (row < cMinRow) cMinRow = row;
+      if (row > cMaxRow) cMaxRow = row;
+      hSum += heights[idx];
+      if (heights[idx] > hMax) hMax = heights[idx];
+      if (col > 0 && isBuilding[idx - 1] && !clusterVisited[idx - 1]) stack.push(idx - 1);
+      if (col < W - 1 && isBuilding[idx + 1] && !clusterVisited[idx + 1]) stack.push(idx + 1);
+      if (row > 0 && isBuilding[idx - W] && !clusterVisited[idx - W]) stack.push(idx - W);
+      if (row < H - 1 && isBuilding[idx + W] && !clusterVisited[idx + W]) stack.push(idx + W);
+    }
+
+    if (cluster.length >= MIN_BUILDING_PIXELS) {
+      buildingClusters.push({
+        pixels: cluster,
+        minCol: cMinCol, maxCol: cMaxCol,
+        minRow: cMinRow, maxRow: cMaxRow,
+        avgHeight: hSum / cluster.length,
+        maxHeight: hMax
+      });
+    }
   }
 
   // World dimensions: 500m × 500m centered at origin
@@ -149,42 +216,37 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   glowSprite.scale.set(40, 40, 1);
   scene.add(glowSprite);
 
-  // ── Build Terrain Mesh ──────────────────────────────────────────────────
+  // ── Build Terrain Mesh (ground only — buildings flattened) ─────────────
+  const groundHeights = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    groundHeights[i] = isBuilding[i] ? minH : heights[i];
+  }
+
   const planeGeo = new THREE.PlaneGeometry(worldW, worldH, W - 1, H - 1);
-  planeGeo.rotateX(-Math.PI / 2); // lay flat in XZ plane
+  planeGeo.rotateX(-Math.PI / 2);
 
   const posAttr = planeGeo.attributes.position;
   const groundLevel = minH;
-  const heightScale = 1.0; // 1:1 metre scale
+  const heightScale = 1.0;
 
   for (let i = 0; i < posAttr.count; i++) {
-    // PlaneGeometry after rotateX(-PI/2): X is horizontal, Y is up, Z is horizontal
-    // Vertices are laid out row-by-row: col varies first (X), then row (Z)
     const col = i % W;
     const row = Math.floor(i / W);
-    const h = (heights[row * W + col] - groundLevel) * heightScale;
+    const h = (groundHeights[row * W + col] - groundLevel) * heightScale;
     posAttr.setY(i, h);
   }
 
   planeGeo.computeVertexNormals();
 
-  // Color vertices: ground vs elevated
+  const groundColor = new THREE.Color(0xd4c5a9);
+  const buildingColor = new THREE.Color(0x8a9bae);
+
   const colors = new Float32Array(posAttr.count * 3);
-  const groundColor = new THREE.Color(0xd4c5a9); // warm sandstone
-  const buildingColor = new THREE.Color(0x8a9bae); // cool blue-grey
-  const heightRange = maxH - minH;
-
   for (let i = 0; i < posAttr.count; i++) {
-    const col = i % W;
-    const row = Math.floor(i / W);
-    const h = heights[row * W + col];
-    const t = Math.min(1, Math.max(0, (h - minH - 2) / (heightRange * 0.3)));
-    const c = new THREE.Color().lerpColors(groundColor, buildingColor, t);
-    colors[i * 3]     = c.r;
-    colors[i * 3 + 1] = c.g;
-    colors[i * 3 + 2] = c.b;
+    colors[i * 3]     = groundColor.r;
+    colors[i * 3 + 1] = groundColor.g;
+    colors[i * 3 + 2] = groundColor.b;
   }
-
   planeGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const terrainMat = new THREE.MeshLambertMaterial({
@@ -196,6 +258,29 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   terrain.castShadow = true;
   terrain.receiveShadow = true;
   scene.add(terrain);
+
+  // ── Build Building Box Geometries ─────────────────────────────────────
+  const buildingMat = new THREE.MeshLambertMaterial({ color: buildingColor });
+  const buildingMeshes = [];
+
+  for (const cluster of buildingClusters) {
+    const boxW = (cluster.maxCol - cluster.minCol + 1) * meta.metersPerPixel;
+    const boxD = (cluster.maxRow - cluster.minRow + 1) * meta.metersPerPixel;
+    const buildingH = (cluster.avgHeight - groundLevel) * heightScale;
+    if (buildingH <= 0) continue;
+
+    const geo = new THREE.BoxGeometry(boxW, buildingH, boxD);
+
+    const cx = (cluster.minCol + cluster.maxCol) / 2 * meta.metersPerPixel - halfW;
+    const cz = (cluster.minRow + cluster.maxRow) / 2 * meta.metersPerPixel - halfH;
+
+    const mesh = new THREE.Mesh(geo, buildingMat);
+    mesh.position.set(cx, buildingH / 2, cz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    buildingMeshes.push(mesh);
+  }
 
   // ── Target Location Marker ─────────────────────────────────────────────
   function lngLatToWorld(lng, lat) {
@@ -342,7 +427,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
       .normalize();
 
     const raycaster = new THREE.Raycaster(markerPos, sunDir, 0, SUN_DIST * 2);
-    const intersects = raycaster.intersectObject(terrain);
+    const allObstacles = [terrain, ...buildingMeshes];
+    const intersects = raycaster.intersectObjects(allObstacles);
 
     if (intersects.length > 0) {
       sunStatusEl.textContent = '◑ IN SHADOW';
