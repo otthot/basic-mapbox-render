@@ -6,10 +6,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 (async function () {
   'use strict';
-
   // ── Config ──────────────────────────────────────────────────────────────
-  const TARGET_LAT = 55.69162107686692;
-  const TARGET_LNG = 12.558723441754955;
+  const TARGET_LAT = 55.691437279584 // 55.69162107686692 // ;
+  const TARGET_LNG = 12.55876633423455 //12.558723441754955 // ;
   const DSM_URL    = 'public/dsm-norrebro.png';
   const META_URL   = 'public/dsm-meta.json';
   const SUN_DIST   = 200;
