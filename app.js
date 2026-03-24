@@ -1,453 +1,556 @@
-// app.js — SønSpot Shadow Engine Prototype
-// Reads MAPBOX_TOKEN from window.MAPBOX_TOKEN (injected by env.js)
-// or falls back to the hardcoded placeholder.
+// app.js — SønSpot 3D Shadow Viewer
+// Three.js scene with DSM terrain, SunCalc lighting, shadow playback
 
-(async function () {
-  // -------------------------------------------------------------------------
-  // Config
-  // -------------------------------------------------------------------------
-  const CENTER_LAT = 55.69151222577356;
-  const CENTER_LNG = 12.558648339901735;
-  const DSM_URL = "public/dsm-norrebro.png";
-  const META_URL = "public/dsm-meta.json";
+(function () {
+  'use strict';
 
-  // -------------------------------------------------------------------------
-  // Mapbox init
-  // -------------------------------------------------------------------------
-  const token =
-    window.MAPBOX_TOKEN || "pk.eyJ1IjoicGxhY2Vob2xkZXIiLCJhIjoiIn0.placeholder";
-  mapboxgl.accessToken = token;
+  const TARGET_LAT = 55.69162107686692;
+  const TARGET_LNG = 12.558723441754955;
+  const DSM_URL = 'public/dsm-norrebro.png';
+  const META_URL = 'public/dsm-meta.json';
+  const WORLD_SIZE = 500; // 250 px * 2 m/px
+  const HALF = WORLD_SIZE / 2;
+  const SUN_DISTANCE = 400;
+  const SHADOW_MAP_SIZE = 2048;
+  const DAY_DURATION_SEC = 30;
 
-  const map = new mapboxgl.Map({
-    container: "map",
-    style: "mapbox://styles/mapbox/light-v11",
-    center: [CENTER_LNG, CENTER_LAT],
-    zoom: 16.5,
-    pitch: 0,
-  });
-
-  map.addControl(new mapboxgl.NavigationControl(), "top-right");
-
-  // -------------------------------------------------------------------------
-  // DSM state
-  // -------------------------------------------------------------------------
-  let dsmPixels = null; // Uint8ClampedArray RGBA
+  // State
   let dsmMeta = null;
+  let heightData = null; // Float32Array [row * width + col]
+  let terrain = null;
+  let targetMarker = null;
+  let sunLight = null;
+  let sunSphere = null;
+  let scene, camera, renderer, controls;
+  let isPlaying = false;
+  let playStartTime = 0;
+  let playStartMinute = 0;
+  let sunriseMinute = 0;
+  let sunsetMinute = 0;
+  let animFrameId = null;
 
-  // -------------------------------------------------------------------------
-  // Shadow canvas — sized to map container, redrawn on map move/resize
-  // -------------------------------------------------------------------------
-  const shadowCanvas = document.getElementById("shadow-canvas");
-  const shadowCtx = shadowCanvas.getContext("2d");
+  // DOM refs
+  const container = document.getElementById('scene-container');
+  const loadingOverlay = document.getElementById('loading-overlay');
+  const loadingBarInner = document.getElementById('loading-bar-inner');
+  const timeDisplay = document.getElementById('time-display');
+  const datePicker = document.getElementById('date-picker');
+  const playBtn = document.getElementById('play-btn');
+  const timeSlider = document.getElementById('time-slider');
+  const sunBadge = document.getElementById('sun-badge');
+  const shadowOpacity = document.getElementById('shadow-opacity');
+  const sunriseMarkerEl = document.getElementById('sunrise-marker');
+  const sunriseLabelEl = document.getElementById('sunrise-label');
+  const sunsetMarkerEl = document.getElementById('sunset-marker');
+  const sunsetLabelEl = document.getElementById('sunset-label');
 
-  function resizeShadowCanvas() {
-    const wrap = document.getElementById("map-wrap");
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight;
-    if (shadowCanvas.width !== w || shadowCanvas.height !== h) {
-      shadowCanvas.width = w;
-      shadowCanvas.height = h;
-    }
+  // ── Coordinate conversion ───────────────────────────────────────────────
+
+  function lngLatToWorld(lng, lat, meta) {
+    const metersPerDegLat = 111320;
+    const metersPerDegLng = 111320 * Math.cos(meta.centerLat * Math.PI / 180);
+    const dx = (lng - meta.centerLng) * metersPerDegLng;
+    const dz = -(lat - meta.centerLat) * metersPerDegLat;
+    return { x: dx, z: dz };
   }
 
-  window.addEventListener("resize", () => {
-    resizeShadowCanvas();
-    if (dsmPixels) renderShadowOverlay();
-  });
+  function worldToPixel(wx, wz) {
+    const col = (wx + HALF) / dsmMeta.metersPerPixel;
+    const row = (wz + HALF) / dsmMeta.metersPerPixel;
+    return { col: Math.round(col), row: Math.round(row) };
+  }
 
-  map.on("load", resizeShadowCanvas);
-  map.on("move", () => { if (dsmPixels) renderShadowOverlay(); });
-  map.on("zoom", () => { if (dsmPixels) renderShadowOverlay(); });
+  function getHeightAt(col, row) {
+    if (!heightData || col < 0 || row < 0 || col >= dsmMeta.width || row >= dsmMeta.height) return 0;
+    return heightData[row * dsmMeta.width + col];
+  }
 
-  // -------------------------------------------------------------------------
-  // Time slider
-  // -------------------------------------------------------------------------
-  const slider = document.getElementById("time-slider");
-  const timeDisplay = document.getElementById("time-display");
+  function getHeightAtWorld(wx, wz) {
+    const { col, row } = worldToPixel(wx, wz);
+    return getHeightAt(col, row);
+  }
+
+  // ── Time helpers ────────────────────────────────────────────────────────
+
+  function getSelectedDate() {
+    const v = datePicker.value;
+    return v ? new Date(v + 'T12:00:00') : new Date();
+  }
 
   function minutesToDate(minutes) {
-    const now = new Date();
-    now.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-    return now;
+    const d = getSelectedDate();
+    d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return d;
   }
 
   function formatTime(minutes) {
-    const h = String(Math.floor(minutes / 60)).padStart(2, "0");
-    const m = String(minutes % 60).padStart(2, "0");
-    return `${h}:${m}`;
+    const h = String(Math.floor(minutes / 60)).padStart(2, '0');
+    const m = String(minutes % 60).padStart(2, '0');
+    return h + ':' + m;
   }
 
-  slider.addEventListener("input", () => {
-    timeDisplay.textContent = formatTime(Number(slider.value));
-    updateSunDial();
-    if (dsmPixels) renderShadowOverlay();
-  });
-
-  // -------------------------------------------------------------------------
-  // Sun dial
-  // -------------------------------------------------------------------------
-  const dialCanvas = document.getElementById("sun-dial");
-  const dialCtx = dialCanvas.getContext("2d");
-  const statAz = document.getElementById("stat-az");
-  const statAlt = document.getElementById("stat-alt");
-
-  function getSunPosition(minutes) {
-    const date = minutesToDate(minutes);
-    return SunCalc.getPosition(date, CENTER_LAT, CENTER_LNG);
+  function computeSunTimes() {
+    const d = getSelectedDate();
+    const times = SunCalc.getTimes(d, TARGET_LAT, TARGET_LNG);
+    const rise = times.sunrise;
+    const set = times.sunset;
+    sunriseMinute = rise.getHours() * 60 + rise.getMinutes();
+    sunsetMinute = set.getHours() * 60 + set.getMinutes();
+    updateSliderMarkers();
   }
 
-  function updateSunDial() {
-    const pos = getSunPosition(Number(slider.value));
-    const azDeg = ((pos.azimuth * 180) / Math.PI + 180) % 360;
-    const altDeg = (pos.altitude * 180) / Math.PI;
-
-    statAz.textContent = `${azDeg.toFixed(0)}°`;
-    statAlt.textContent = `${altDeg.toFixed(1)}°`;
-
-    // Draw dial
-    const cx = 32, cy = 32, r = 26;
-    dialCtx.clearRect(0, 0, 64, 64);
-
-    // Background circle
-    dialCtx.beginPath();
-    dialCtx.arc(cx, cy, r, 0, Math.PI * 2);
-    dialCtx.fillStyle = "#2a2a2a";
-    dialCtx.fill();
-    dialCtx.strokeStyle = "#444";
-    dialCtx.lineWidth = 1;
-    dialCtx.stroke();
-
-    // Cardinal ticks
-    dialCtx.fillStyle = "#555";
-    dialCtx.font = "7px sans-serif";
-    dialCtx.textAlign = "center";
-    dialCtx.textBaseline = "middle";
-    dialCtx.fillText("N", cx, cy - r + 7);
-    dialCtx.fillText("S", cx, cy + r - 7);
-    dialCtx.fillText("E", cx + r - 7, cy);
-    dialCtx.fillText("W", cx - r + 7, cy);
-
-    // Sun direction arrow
-    const rad = (azDeg - 90) * (Math.PI / 180);
-    const sunX = cx + Math.cos(rad) * (r - 6);
-    const sunY = cy + Math.sin(rad) * (r - 6);
-
-    dialCtx.beginPath();
-    dialCtx.moveTo(cx, cy);
-    dialCtx.lineTo(sunX, sunY);
-    dialCtx.strokeStyle = altDeg > 0 ? "#f0c040" : "#444";
-    dialCtx.lineWidth = 2;
-    dialCtx.stroke();
-
-    // Sun dot
-    dialCtx.beginPath();
-    dialCtx.arc(sunX, sunY, 4, 0, Math.PI * 2);
-    dialCtx.fillStyle = altDeg > 0 ? "#f0c040" : "#444";
-    dialCtx.fill();
+  function updateSliderMarkers() {
+    const pctRise = (sunriseMinute / 1439) * 100;
+    const pctSet = (sunsetMinute / 1439) * 100;
+    sunriseMarkerEl.style.left = pctRise + '%';
+    sunriseLabelEl.style.left = pctRise + '%';
+    sunriseLabelEl.textContent = '↑' + formatTime(sunriseMinute);
+    sunsetMarkerEl.style.left = pctSet + '%';
+    sunsetLabelEl.style.left = pctSet + '%';
+    sunsetLabelEl.textContent = formatTime(sunsetMinute) + '↓';
   }
 
-  // -------------------------------------------------------------------------
-  // DSM loading
-  // -------------------------------------------------------------------------
-  async function loadDsm() {
-    setStatus("Loading DSM…");
-    try {
-      const [metaRes, imgEl] = await Promise.all([
-        fetch(META_URL),
-        loadImage(DSM_URL),
-      ]);
-
-      if (!metaRes.ok) throw new Error(`Meta fetch failed: ${metaRes.status}`);
-      dsmMeta = await metaRes.json();
-
-      // Read pixels from DSM image via offscreen canvas
-      const offscreen = document.createElement("canvas");
-      offscreen.width = dsmMeta.width;
-      offscreen.height = dsmMeta.height;
-      const ctx = offscreen.getContext("2d");
-      ctx.drawImage(imgEl, 0, 0);
-      dsmPixels = ctx.getImageData(0, 0, dsmMeta.width, dsmMeta.height).data;
-
-      setStatus(`DSM loaded (${dsmMeta.width}×${dsmMeta.height} px, ${dsmMeta.metersPerPixel}m/px)`);
-      document.getElementById("compute-btn").disabled = false;
-      renderShadowOverlay();
-    } catch (err) {
-      setStatus(`DSM not found — run: node prepare-dsm.js  (${err.message})`);
-    }
-  }
+  // ── DSM Loading ─────────────────────────────────────────────────────────
 
   function loadImage(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Image load failed: ${src}`));
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error('Image load failed: ' + src)); };
       img.src = src;
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Terrarium decode
-  // -------------------------------------------------------------------------
-  function decodeHeight(r, g, b) {
+  function decodeTerrarium(r, g, b) {
     return r * 256 + g + b / 256 - 32768;
   }
 
-  function getDsmHeight(x, y) {
-    if (x < 0 || y < 0 || x >= dsmMeta.width || y >= dsmMeta.height) return 0;
-    const idx = (y * dsmMeta.width + x) * 4;
-    return decodeHeight(dsmPixels[idx], dsmPixels[idx + 1], dsmPixels[idx + 2]);
-  }
+  async function loadDSM() {
+    loadingBarInner.style.width = '20%';
+    const metaRes = await fetch(META_URL);
+    dsmMeta = await metaRes.json();
+    loadingBarInner.style.width = '40%';
 
-  // -------------------------------------------------------------------------
-  // Ray-march shadow computation
-  // Returns a Uint8ClampedArray of alpha values (0=sun, 200=shadow)
-  // -------------------------------------------------------------------------
-  function computeShadows(azimuthRad, altitudeRad) {
+    const img = await loadImage(DSM_URL);
+    loadingBarInner.style.width = '60%';
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = dsmMeta.width;
+    offscreen.height = dsmMeta.height;
+    const ctx = offscreen.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const pixels = ctx.getImageData(0, 0, dsmMeta.width, dsmMeta.height).data;
+
     const w = dsmMeta.width;
     const h = dsmMeta.height;
-    const result = new Uint8ClampedArray(w * h); // 0 = lit, 1 = shadow
+    heightData = new Float32Array(w * h);
 
-    if (altitudeRad <= 0) {
-      // Sun below horizon — everything in shadow
-      result.fill(1);
-      return result;
+    let minH = Infinity, maxH = -Infinity;
+    for (let i = 0; i < w * h; i++) {
+      const idx = i * 4;
+      const elev = decodeTerrarium(pixels[idx], pixels[idx + 1], pixels[idx + 2]);
+      heightData[i] = elev;
+      if (elev < minH) minH = elev;
+      if (elev > maxH) maxH = elev;
     }
 
+    loadingBarInner.style.width = '80%';
+    return { minH, maxH };
+  }
+
+  // ── Scene Setup ─────────────────────────────────────────────────────────
+
+  function initScene() {
+    scene = new THREE.Scene();
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    container.appendChild(renderer.domElement);
+
+    camera = new THREE.PerspectiveCamera(
+      45,
+      container.clientWidth / container.clientHeight,
+      1,
+      2000
+    );
+    camera.position.set(-300, 250, 300);
+    camera.lookAt(0, 0, 0);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.maxPolarAngle = Math.PI / 2.1;
+    controls.minDistance = 50;
+    controls.maxDistance = 800;
+    controls.target.set(0, 20, 0);
+    controls.update();
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.3);
+    scene.add(ambient);
+
+    const hemi = new THREE.HemisphereLight(0x87CEEB, 0xD4A574, 0.4);
+    scene.add(hemi);
+
+    sunLight = new THREE.DirectionalLight(0xfff5e0, 1.5);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = SHADOW_MAP_SIZE;
+    sunLight.shadow.mapSize.height = SHADOW_MAP_SIZE;
+    sunLight.shadow.camera.left = -HALF;
+    sunLight.shadow.camera.right = HALF;
+    sunLight.shadow.camera.top = HALF;
+    sunLight.shadow.camera.bottom = -HALF;
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = 1000;
+    sunLight.shadow.bias = -0.001;
+    sunLight.shadow.normalBias = 0.02;
+    scene.add(sunLight);
+    scene.add(sunLight.target);
+
+    const sunGeo = new THREE.SphereGeometry(8, 16, 16);
+    const sunMat = new THREE.MeshBasicMaterial({ color: 0xFFD166 });
+    sunSphere = new THREE.Mesh(sunGeo, sunMat);
+    scene.add(sunSphere);
+  }
+
+  // ── Terrain Mesh ────────────────────────────────────────────────────────
+
+  function buildTerrain(minH, maxH) {
+    const w = dsmMeta.width;
+    const h = dsmMeta.height;
     const mpp = dsmMeta.metersPerPixel;
 
-    // Sun direction in pixel space:
-    // azimuth 0 = North (+Y in UTM), increases clockwise
-    // Map azimuth to dx/dy in pixel coords (Y axis flipped: row 0 = North)
-    const az = azimuthRad; // radians from north, clockwise
-    const sunDx = Math.sin(az); // east component → +col
-    const sunDy = -Math.cos(az); // north component → -row (rows increase southward)
+    const geo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, w - 1, h - 1);
+    geo.rotateX(-Math.PI / 2);
 
-    // Tangent of elevation angle: height gained per horizontal metre
-    const tanAlt = Math.tan(altitudeRad);
+    const positions = geo.attributes.position.array;
+    const colors = new Float32Array(positions.length);
 
-    // Step size (pixels)
-    const STEP = 0.5;
-    const stepX = sunDx * STEP;
-    const stepY = sunDy * STEP;
-    const stepDist = STEP * mpp; // horizontal distance per step (metres)
-    const heightGainPerStep = tanAlt * stepDist;
-
-    const t0 = performance.now();
+    const groundLevel = minH + (maxH - minH) * 0.15;
+    const buildingThreshold = minH + (maxH - minH) * 0.25;
 
     for (let row = 0; row < h; row++) {
       for (let col = 0; col < w; col++) {
-        const baseHeight = getDsmHeight(col, row);
-        let px = col;
-        let py = row;
-        let rayHeight = baseHeight;
-        let inShadow = false;
+        const vertIdx = row * w + col;
+        const elev = heightData[vertIdx];
 
-        // March from this pixel toward the sun until we leave the grid
-        for (let step = 1; step < 512; step++) {
-          px += stepX;
-          py += stepY;
-          rayHeight += heightGainPerStep;
+        positions[vertIdx * 3 + 1] = elev - minH;
 
-          const ix = Math.round(px);
-          const iy = Math.round(py);
+        const isBuilding = elev > buildingThreshold;
+        const heightNorm = (elev - minH) / (maxH - minH);
 
-          if (ix < 0 || iy < 0 || ix >= w || iy >= h) break;
-
-          const terrainH = getDsmHeight(ix, iy);
-          if (terrainH > rayHeight) {
-            inShadow = true;
-            break;
-          }
-        }
-
-        result[row * w + col] = inShadow ? 1 : 0;
-      }
-    }
-
-    const dt = performance.now() - t0;
-    setStatus(`Computed in ${dt.toFixed(0)}ms`);
-    return result;
-  }
-
-  // -------------------------------------------------------------------------
-  // Project geo → screen pixel
-  // -------------------------------------------------------------------------
-  function geoToScreen(lng, lat) {
-    return map.project([lng, lat]);
-  }
-
-  // Convert DSM pixel index to geographic coordinate
-  function dsmPixelToGeo(col, row) {
-    const { bbox, width, height } = dsmMeta;
-    // EPSG:25832 UTM → approximate WGS84 using linear interpolation
-    // (accurate enough for ~500m tile at Copenhagen's latitude)
-    const utmX = bbox.minX + (col / (width - 1)) * (bbox.maxX - bbox.minX);
-    const utmY = bbox.maxY - (row / (height - 1)) * (bbox.maxY - bbox.minY); // rows from top
-
-    // Rough UTM32N → WGS84 for Copenhagen (error < 1m over 500m)
-    const { lat, lng } = utm32nToWgs84(utmX, utmY);
-    return { lat, lng };
-  }
-
-  // Approximate UTM zone 32N → WGS84 (valid for Copenhagen area)
-  function utm32nToWgs84(x, y) {
-    // Central meridian 9° for zone 32
-    const a = 6378137.0;
-    const f = 1 / 298.257223563;
-    const b = a * (1 - f);
-    const e2 = 1 - (b * b) / (a * a);
-    const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
-    const k0 = 0.9996;
-    const E0 = 500000;
-    const N0 = 0;
-    const lon0 = 9 * (Math.PI / 180);
-
-    const xp = x - E0;
-    const yp = y - N0;
-    const M = yp / k0;
-    const mu =
-      M /
-      (a *
-        (1 -
-          e2 / 4 -
-          (3 * e2 * e2) / 64 -
-          (5 * e2 * e2 * e2) / 256));
-
-    const p1 =
-      mu +
-      ((3 * e1) / 2 - (27 * e1 * e1 * e1) / 32) * Math.sin(2 * mu);
-    const p2 =
-      p1 +
-      ((21 * e1 * e1) / 16 - (55 * e1 * e1 * e1 * e1) / 32) *
-        Math.sin(4 * mu);
-    const p3 =
-      p2 + ((151 * e1 * e1 * e1) / 96) * Math.sin(6 * mu);
-    const phi1 = p3;
-
-    const N1 = a / Math.sqrt(1 - e2 * Math.sin(phi1) * Math.sin(phi1));
-    const T1 = Math.tan(phi1) * Math.tan(phi1);
-    const C1 = (e2 / (1 - e2)) * Math.cos(phi1) * Math.cos(phi1);
-    const R1 =
-      (a * (1 - e2)) /
-      Math.pow(1 - e2 * Math.sin(phi1) * Math.sin(phi1), 1.5);
-    const D = xp / (N1 * k0);
-
-    const latRad =
-      phi1 -
-      ((N1 * Math.tan(phi1)) / R1) *
-        (D * D / 2 -
-          ((5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * (e2 / (1 - e2))) *
-            D * D * D * D) /
-            24);
-
-    const lonRad =
-      lon0 +
-      (D -
-        ((1 + 2 * T1 + C1) * D * D * D) / 6) /
-        Math.cos(phi1);
-
-    return { lat: latRad * (180 / Math.PI), lng: lonRad * (180 / Math.PI) };
-  }
-
-  // -------------------------------------------------------------------------
-  // Render shadow overlay onto the canvas using the map's current viewport
-  // -------------------------------------------------------------------------
-  function renderShadowOverlay() {
-    if (!dsmPixels || !dsmMeta) return;
-
-    const minutes = Number(slider.value);
-    const sunPos = getSunPosition(minutes);
-    const shadows = computeShadows(sunPos.azimuth, sunPos.altitude);
-
-    const cw = shadowCanvas.width;
-    const ch = shadowCanvas.height;
-
-    const imageData = shadowCtx.createImageData(cw, ch);
-    const data = imageData.data;
-
-    const dw = dsmMeta.width;
-    const dh = dsmMeta.height;
-
-    // Project the four corners of the DSM tile to screen space
-    const corners = [
-      dsmPixelToGeo(0, 0),
-      dsmPixelToGeo(dw - 1, 0),
-      dsmPixelToGeo(dw - 1, dh - 1),
-      dsmPixelToGeo(0, dh - 1),
-    ].map((c) => geoToScreen(c.lng, c.lat));
-
-    // Bounding screen rect of the DSM
-    const minSX = Math.min(...corners.map((c) => c.x));
-    const maxSX = Math.max(...corners.map((c) => c.x));
-    const minSY = Math.min(...corners.map((c) => c.y));
-    const maxSY = Math.max(...corners.map((c) => c.y));
-
-    const scaleX = (maxSX - minSX) / dw;
-    const scaleY = (maxSY - minSY) / dh;
-
-    console.log(`DSM screen bounds: x=${minSX.toFixed(0)}–${maxSX.toFixed(0)}, y=${minSY.toFixed(0)}–${maxSY.toFixed(0)}, canvas=${cw}×${ch}`);
-
-    // Clear previous frame
-    shadowCtx.clearRect(0, 0, cw, ch);
-
-    // Paint every DSM pixel:
-    //   lit   → warm yellow tint  (so it's visible on dark map)
-    //   shadow → dark navy overlay
-    for (let sy = Math.max(0, Math.floor(minSY)); sy < Math.min(ch, Math.ceil(maxSY)); sy++) {
-      for (let sx = Math.max(0, Math.floor(minSX)); sx < Math.min(cw, Math.ceil(maxSX)); sx++) {
-        const dx = Math.round((sx - minSX) / scaleX);
-        const dy = Math.round((sy - minSY) / scaleY);
-        if (dx < 0 || dy < 0 || dx >= dw || dy >= dh) continue;
-
-        const inShadow = shadows[dy * dw + dx];
-        const idx = (sy * cw + sx) * 4;
-        if (inShadow) {
-          // shadow: dark semi-transparent blue
-          data[idx + 0] = 10;
-          data[idx + 1] = 10;
-          data[idx + 2] = 40;
-          data[idx + 3] = 170;
+        let r, g, b;
+        if (isBuilding) {
+          const shade = 0.55 + heightNorm * 0.25;
+          r = 0.65 * shade;
+          g = 0.68 * shade;
+          b = 0.75 * shade;
         } else {
-          // sunlit: warm yellow tint
-          data[idx + 0] = 255;
-          data[idx + 1] = 220;
-          data[idx + 2] = 80;
-          data[idx + 3] = 60;
+          const shade = 0.7 + heightNorm * 0.3;
+          r = 0.82 * shade;
+          g = 0.78 * shade;
+          b = 0.68 * shade;
         }
+
+        colors[vertIdx * 3] = r;
+        colors[vertIdx * 3 + 1] = g;
+        colors[vertIdx * 3 + 2] = b;
       }
     }
 
-    shadowCtx.putImageData(imageData, 0, 0);
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.attributes.position.needsUpdate = true;
+    geo.computeVertexNormals();
 
-    // Debug: draw red border around DSM tile so we can confirm placement
-    shadowCtx.strokeStyle = "red";
-    shadowCtx.lineWidth = 2;
-    shadowCtx.strokeRect(minSX, minSY, maxSX - minSX, maxSY - minSY);
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.85,
+      metalness: 0.05,
+      flatShading: true,
+    });
 
-    updateSunDial();
+    terrain = new THREE.Mesh(geo, mat);
+    terrain.castShadow = true;
+    terrain.receiveShadow = true;
+    scene.add(terrain);
+
+    const yOffset = -(minH + (maxH - minH) * 0.5) + 20;
+    scene.position.y = yOffset;
   }
 
-  // -------------------------------------------------------------------------
-  // Status helper
-  // -------------------------------------------------------------------------
-  function setStatus(msg) {
-    document.getElementById("status").textContent = msg;
+  // ── Target Marker ───────────────────────────────────────────────────────
+
+  function placeTargetMarker(minH) {
+    const pos = lngLatToWorld(TARGET_LNG, TARGET_LAT, dsmMeta);
+    const terrainY = getHeightAtWorld(pos.x, pos.z) - minH;
+
+    const geo = new THREE.CylinderGeometry(2.5, 2.5, 6, 16);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xFFD166,
+      emissive: 0xFFD166,
+      emissiveIntensity: 0.8,
+      roughness: 0.3,
+      metalness: 0.1,
+    });
+    targetMarker = new THREE.Mesh(geo, mat);
+    targetMarker.position.set(pos.x, terrainY + 3, pos.z);
+    targetMarker.castShadow = false;
+    targetMarker.receiveShadow = false;
+    scene.add(targetMarker);
+
+    const ringGeo = new THREE.RingGeometry(4, 6, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xFFD166,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(pos.x, terrainY + 0.5, pos.z);
+    scene.add(ring);
+
+    return { x: pos.x, y: terrainY, z: pos.z };
   }
 
-  // -------------------------------------------------------------------------
-  // Compute button
-  // -------------------------------------------------------------------------
-  const computeBtn = document.getElementById("compute-btn");
-  computeBtn.disabled = true;
-  computeBtn.addEventListener("click", () => {
-    if (dsmPixels) renderShadowOverlay();
+  // ── Sun Position ────────────────────────────────────────────────────────
+
+  function updateSunPosition(minutes) {
+    const d = minutesToDate(minutes);
+    const sunPos = SunCalc.getPosition(d, TARGET_LAT, TARGET_LNG);
+    const azimuth = sunPos.azimuth;
+    const altitude = sunPos.altitude;
+
+    const lx = Math.sin(azimuth) * Math.cos(altitude);
+    const ly = Math.sin(altitude);
+    const lz = Math.cos(azimuth) * Math.cos(altitude);
+
+    sunLight.position.set(lx * SUN_DISTANCE, ly * SUN_DISTANCE, lz * SUN_DISTANCE);
+    sunLight.target.position.set(0, 0, 0);
+    sunSphere.position.copy(sunLight.position);
+
+    const intensity = altitude > 0 ? Math.max(0.3, Math.min(1.5, altitude * 3)) : 0;
+    sunLight.intensity = intensity;
+    sunSphere.visible = altitude > 0;
+
+    updateBackground(altitude);
+    updateShadowOpacity();
+
+    timeDisplay.textContent = formatTime(minutes);
+  }
+
+  function updateBackground(altitude) {
+    const t = Math.max(0, Math.min(1, altitude * 4));
+    const dark = { r: 10 / 255, g: 15 / 255, b: 30 / 255 };
+    const light = { r: 135 / 255, g: 180 / 255, b: 220 / 255 };
+    const r = dark.r + (light.r - dark.r) * t;
+    const g = dark.g + (light.g - dark.g) * t;
+    const b = dark.b + (light.b - dark.b) * t;
+    scene.background = new THREE.Color(r, g, b);
+    scene.fog = new THREE.Fog(new THREE.Color(r, g, b), 600, 1200);
+  }
+
+  function updateShadowOpacity() {
+    if (!terrain) return;
+    const val = Number(shadowOpacity.value) / 100;
+    renderer.shadowMap.enabled = val > 0;
+    sunLight.shadow.opacity = val;
+    if (terrain.material) {
+      terrain.material.shadowSide = THREE.FrontSide;
+    }
+  }
+
+  // ── Shadow Detection ────────────────────────────────────────────────────
+
+  function checkTargetShadow() {
+    if (!targetMarker || !renderer) return;
+
+    const minutes = getCurrentMinute();
+    const d = minutesToDate(minutes);
+    const sunPos = SunCalc.getPosition(d, TARGET_LAT, TARGET_LNG);
+
+    if (sunPos.altitude <= 0) {
+      setSunBadge(false, true);
+      return;
+    }
+
+    // Raycaster from sun toward target
+    const markerWorldPos = new THREE.Vector3();
+    targetMarker.getWorldPosition(markerWorldPos);
+
+    const sunWorldPos = new THREE.Vector3();
+    sunSphere.getWorldPosition(sunWorldPos);
+
+    const dir = new THREE.Vector3().subVectors(markerWorldPos, sunWorldPos).normalize();
+    const raycaster = new THREE.Raycaster(sunWorldPos, dir, 0, SUN_DISTANCE * 2);
+
+    const intersects = raycaster.intersectObject(terrain, false);
+    if (intersects.length === 0) {
+      setSunBadge(true, false);
+      return;
+    }
+
+    const hitPoint = intersects[0].point;
+    const distToHit = sunWorldPos.distanceTo(hitPoint);
+    const distToMarker = sunWorldPos.distanceTo(markerWorldPos);
+
+    const inSun = distToHit >= distToMarker - 5;
+    setSunBadge(inSun, false);
+  }
+
+  function setSunBadge(inSun, isNight) {
+    if (isNight) {
+      sunBadge.className = 'sun-badge in-shadow';
+      sunBadge.textContent = '🌙 NIGHT';
+    } else if (inSun) {
+      sunBadge.className = 'sun-badge in-sun';
+      sunBadge.textContent = '☀ IN SUN';
+    } else {
+      sunBadge.className = 'sun-badge in-shadow';
+      sunBadge.textContent = '◑ IN SHADOW';
+    }
+  }
+
+  // ── Playback ────────────────────────────────────────────────────────────
+
+  function getCurrentMinute() {
+    return Number(timeSlider.value);
+  }
+
+  function startPlayback() {
+    isPlaying = true;
+    playBtn.textContent = '⏸ Pause';
+    playBtn.classList.remove('btn-play');
+    playStartTime = performance.now();
+    playStartMinute = sunriseMinute;
+    timeSlider.value = sunriseMinute;
+  }
+
+  function stopPlayback() {
+    isPlaying = false;
+    playBtn.textContent = '▶ Play';
+    playBtn.classList.add('btn-play');
+  }
+
+  playBtn.addEventListener('click', function () {
+    if (isPlaying) {
+      stopPlayback();
+    } else {
+      startPlayback();
+    }
   });
 
-  // -------------------------------------------------------------------------
-  // Init
-  // -------------------------------------------------------------------------
-  map.on("load", () => {
-    updateSunDial();
-    loadDsm();
+  // ── Slider Events ──────────────────────────────────────────────────────
+
+  timeSlider.addEventListener('input', function () {
+    if (isPlaying) stopPlayback();
+    const m = Number(timeSlider.value);
+    updateSunPosition(m);
+    checkTargetShadow();
   });
+
+  datePicker.addEventListener('change', function () {
+    computeSunTimes();
+    const m = getCurrentMinute();
+    updateSunPosition(m);
+    checkTargetShadow();
+  });
+
+  shadowOpacity.addEventListener('input', function () {
+    updateShadowOpacity();
+  });
+
+  // ── Marker pulse animation ─────────────────────────────────────────────
+
+  let pulseTime = 0;
+
+  function pulseMarker(dt) {
+    if (!targetMarker) return;
+    pulseTime += dt;
+    const s = 1 + 0.15 * Math.sin(pulseTime * 3);
+    targetMarker.scale.set(s, 1, s);
+    const emI = 0.5 + 0.4 * Math.sin(pulseTime * 3);
+    targetMarker.material.emissiveIntensity = emI;
+  }
+
+  // ── Render Loop ─────────────────────────────────────────────────────────
+
+  let lastTime = 0;
+
+  function animate(time) {
+    animFrameId = requestAnimationFrame(animate);
+    const dt = (time - (lastTime || time)) / 1000;
+    lastTime = time;
+
+    controls.update();
+    pulseMarker(dt);
+
+    if (isPlaying) {
+      const elapsed = (performance.now() - playStartTime) / 1000;
+      const dayRange = sunsetMinute - sunriseMinute;
+      const progress = elapsed / DAY_DURATION_SEC;
+      const currentMinute = Math.round(sunriseMinute + progress * dayRange);
+
+      if (currentMinute >= sunsetMinute) {
+        timeSlider.value = sunsetMinute;
+        updateSunPosition(sunsetMinute);
+        checkTargetShadow();
+        stopPlayback();
+      } else {
+        timeSlider.value = currentMinute;
+        updateSunPosition(currentMinute);
+        checkTargetShadow();
+      }
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  // ── Resize ──────────────────────────────────────────────────────────────
+
+  window.addEventListener('resize', function () {
+    if (!camera || !renderer) return;
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+
+  // ── Init ────────────────────────────────────────────────────────────────
+
+  async function init() {
+    const today = new Date();
+    datePicker.value = today.toISOString().split('T')[0];
+
+    initScene();
+    scene.background = new THREE.Color(0x0a0f1e);
+
+    try {
+      const { minH, maxH } = await loadDSM();
+      buildTerrain(minH, maxH);
+      loadingBarInner.style.width = '90%';
+
+      placeTargetMarker(minH);
+      computeSunTimes();
+      updateSunPosition(720);
+      checkTargetShadow();
+
+      loadingBarInner.style.width = '100%';
+      setTimeout(function () {
+        loadingOverlay.classList.add('hidden');
+      }, 400);
+
+      animate(0);
+    } catch (err) {
+      console.error('Failed to initialize:', err);
+      document.querySelector('.loading-text').textContent =
+        'Error: ' + err.message;
+    }
+  }
+
+  init();
 })();

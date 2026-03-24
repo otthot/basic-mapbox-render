@@ -3,171 +3,356 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SønSpot — Shadow Engine Prototype</title>
-    <link
-      href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css"
-      rel="stylesheet"
-    />
+    <title>SønSpot — 3D Shadow Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne+Mono&display=swap" rel="stylesheet" />
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; height: 100vh; display: flex; flex-direction: column; }
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-      #map-wrap { flex: 1; position: relative; }
-      #map { position: absolute; inset: 0; }
-
-      /* Shadow canvas overlaid on map — sibling of map div, same stacking context */
-      #shadow-canvas {
-        position: absolute;
-        top: 0; left: 0;
-        pointer-events: none;
-        z-index: 10;
+      body {
+        font-family: 'DM Mono', monospace;
+        background: #0d1117;
+        color: #e6edf3;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
       }
 
-      /* Control panel */
+      #scene-container {
+        flex: 1;
+        position: relative;
+        cursor: grab;
+      }
+
+      #scene-container:active { cursor: grabbing; }
+
+      canvas { display: block; }
+
+      /* Loading overlay */
+      #loading-overlay {
+        position: absolute;
+        inset: 0;
+        background: #0d1117;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        transition: opacity 0.6s ease;
+      }
+
+      #loading-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .loading-text {
+        font-family: 'Syne Mono', monospace;
+        font-size: 14px;
+        color: #FFD166;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+
+      .loading-bar {
+        width: 200px;
+        height: 2px;
+        background: #1a2540;
+        margin-top: 16px;
+        border-radius: 1px;
+        overflow: hidden;
+      }
+
+      .loading-bar-inner {
+        width: 0%;
+        height: 100%;
+        background: #FFD166;
+        transition: width 0.3s ease;
+      }
+
+      /* Bottom control panel */
       #controls {
-        background: #1a1a1a;
-        border-top: 1px solid #333;
-        padding: 16px 24px;
+        background: #0d1117;
+        border-top: 1px solid #1a2540;
+        padding: 14px 24px;
         display: flex;
         align-items: center;
-        gap: 24px;
+        gap: 20px;
         flex-wrap: wrap;
+        z-index: 20;
+        min-height: 70px;
       }
 
       .ctrl-group {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
+      }
+
+      .ctrl-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
       }
 
       .ctrl-label {
-        font-size: 11px;
+        font-size: 9px;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #888;
+        letter-spacing: 0.12em;
+        color: #484f58;
+        font-family: 'DM Mono', monospace;
       }
 
       .ctrl-value {
-        font-size: 15px;
-        font-weight: 600;
-        color: #f0c040;
+        font-size: 22px;
+        font-weight: 500;
+        color: #FFD166;
+        font-family: 'Syne Mono', monospace;
+        line-height: 1;
       }
 
-      #time-slider {
+      .ctrl-value-sm {
+        font-size: 13px;
+        font-weight: 400;
+        color: #8b949e;
+        font-family: 'DM Mono', monospace;
+      }
+
+      input[type="date"] {
+        background: #161b22;
+        color: #c9d1d9;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        cursor: pointer;
+        outline: none;
+      }
+
+      input[type="date"]:focus { border-color: #FFD166; }
+      input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+
+      /* Slider track */
+      .slider-wrap {
+        position: relative;
+        flex: 1;
+        min-width: 200px;
+      }
+
+      .slider-track {
+        position: relative;
+        height: 32px;
+        display: flex;
+        align-items: center;
+      }
+
+      input[type="range"] {
         -webkit-appearance: none;
         appearance: none;
-        width: 260px;
+        width: 100%;
         height: 4px;
-        background: #444;
+        background: #21262d;
         border-radius: 2px;
         outline: none;
         cursor: pointer;
+        position: relative;
+        z-index: 2;
       }
 
-      #time-slider::-webkit-slider-thumb {
+      input[type="range"]::-webkit-slider-thumb {
         -webkit-appearance: none;
-        width: 16px; height: 16px;
+        width: 14px;
+        height: 14px;
         border-radius: 50%;
-        background: #f0c040;
+        background: #FFD166;
         cursor: pointer;
+        box-shadow: 0 0 6px rgba(255, 209, 102, 0.5);
       }
 
-      /* Sun dial */
-      #sun-dial-wrap {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-      }
-
-      #sun-dial {
-        width: 64px; height: 64px;
-      }
-
-      .sun-stats {
-        display: flex;
-        gap: 16px;
-      }
-
-      .sun-stat {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 2px;
-      }
-
-      .stat-val {
-        font-size: 14px;
-        font-weight: 700;
-        color: #f0c040;
-      }
-
-      .stat-lbl {
-        font-size: 10px;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-
-      #status {
-        font-size: 12px;
-        color: #666;
-        margin-left: auto;
-      }
-
-      #compute-btn {
-        background: #f0c040;
-        color: #0f0f0f;
+      input[type="range"]::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #FFD166;
+        cursor: pointer;
         border: none;
-        padding: 8px 18px;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 700;
-        cursor: pointer;
-        letter-spacing: 0.04em;
       }
 
-      #compute-btn:hover { background: #ffd84d; }
-      #compute-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
+      .sunrise-marker, .sunset-marker {
+        position: absolute;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 2px;
+        height: 12px;
+        background: #FFD166;
+        opacity: 0.4;
+        z-index: 1;
+        pointer-events: none;
+      }
+
+      .sunrise-label, .sunset-label {
+        position: absolute;
+        top: -14px;
+        transform: translateX(-50%);
+        font-size: 8px;
+        color: #FFD166;
+        opacity: 0.6;
+        white-space: nowrap;
+        font-family: 'DM Mono', monospace;
+        pointer-events: none;
+      }
+
+      /* Buttons */
+      .btn {
+        background: #161b22;
+        border: 1px solid #30363d;
+        color: #c9d1d9;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-family: 'DM Mono', monospace;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+
+      .btn:hover { border-color: #FFD166; color: #FFD166; }
+
+      .btn-play {
+        background: #FFD166;
+        color: #0d1117;
+        border-color: #FFD166;
+        font-weight: 500;
+      }
+
+      .btn-play:hover { background: #ffe08a; border-color: #ffe08a; color: #0d1117; }
+
+      /* Sun status badge */
+      .sun-badge {
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        font-weight: 500;
+        padding: 5px 12px;
+        border-radius: 20px;
+        letter-spacing: 0.06em;
+        transition: all 0.3s ease;
+        white-space: nowrap;
+      }
+
+      .sun-badge.in-sun {
+        background: rgba(255, 209, 102, 0.15);
+        color: #FFD166;
+        border: 1px solid rgba(255, 209, 102, 0.3);
+      }
+
+      .sun-badge.in-shadow {
+        background: rgba(139, 148, 158, 0.1);
+        color: #8b949e;
+        border: 1px solid rgba(139, 148, 158, 0.2);
+      }
+
+      /* Opacity slider */
+      #shadow-opacity {
+        width: 80px;
+      }
+
+      /* Title overlay */
+      #title-overlay {
+        position: absolute;
+        top: 16px;
+        left: 20px;
+        z-index: 10;
+        pointer-events: none;
+      }
+
+      .title-main {
+        font-family: 'Syne Mono', monospace;
+        font-size: 16px;
+        color: #FFD166;
+        letter-spacing: 0.08em;
+      }
+
+      .title-sub {
+        font-family: 'DM Mono', monospace;
+        font-size: 10px;
+        color: #484f58;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-top: 2px;
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        #controls {
+          padding: 10px 14px;
+          gap: 12px;
+        }
+        .ctrl-value { font-size: 18px; }
+        .slider-wrap { min-width: 140px; }
+      }
     </style>
   </head>
   <body>
-    <div id="map-wrap">
-      <div id="map"></div>
-      <canvas id="shadow-canvas"></canvas>
+    <div id="scene-container">
+      <div id="loading-overlay">
+        <span class="loading-text">Loading terrain…</span>
+        <div class="loading-bar">
+          <div class="loading-bar-inner" id="loading-bar-inner"></div>
+        </div>
+      </div>
+      <div id="title-overlay">
+        <div class="title-main">SønSpot</div>
+        <div class="title-sub">3D Shadow Viewer · Nørrebro</div>
+      </div>
     </div>
 
     <div id="controls">
-      <!-- Time slider -->
+      <!-- Time display -->
       <div class="ctrl-group">
-        <span class="ctrl-label">Time of day</span>
-        <input type="range" id="time-slider" min="0" max="1439" value="720" />
+        <span class="ctrl-label">Time</span>
         <span class="ctrl-value" id="time-display">12:00</span>
       </div>
 
-      <!-- Sun dial -->
-      <div id="sun-dial-wrap">
-        <canvas id="sun-dial" width="64" height="64"></canvas>
-        <div class="sun-stats">
-          <div class="sun-stat">
-            <span class="stat-val" id="stat-az">—</span>
-            <span class="stat-lbl">Azimuth</span>
-          </div>
-          <div class="sun-stat">
-            <span class="stat-val" id="stat-alt">—</span>
-            <span class="stat-lbl">Altitude</span>
-          </div>
+      <!-- Date picker -->
+      <div class="ctrl-group">
+        <span class="ctrl-label">Date</span>
+        <input type="date" id="date-picker" />
+      </div>
+
+      <!-- Play/Pause -->
+      <button class="btn btn-play" id="play-btn">▶ Play</button>
+
+      <!-- Time scrub slider -->
+      <div class="slider-wrap">
+        <span class="ctrl-label">Time of Day</span>
+        <div class="slider-track">
+          <div class="sunrise-marker" id="sunrise-marker"></div>
+          <div class="sunrise-label" id="sunrise-label"></div>
+          <div class="sunset-marker" id="sunset-marker"></div>
+          <div class="sunset-label" id="sunset-label"></div>
+          <input type="range" id="time-slider" min="0" max="1439" value="720" />
         </div>
       </div>
 
-      <button id="compute-btn">Compute Shadows</button>
+      <!-- Sun status badge -->
+      <span class="sun-badge in-sun" id="sun-badge">☀ IN SUN</span>
 
-      <span id="status">Load the DSM first with: node prepare-dsm.js</span>
+      <!-- Shadow opacity -->
+      <div class="ctrl-group">
+        <span class="ctrl-label">Shadow</span>
+        <input type="range" id="shadow-opacity" min="0" max="100" value="70" />
+      </div>
     </div>
 
-    <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
-    <script src="public/env.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
