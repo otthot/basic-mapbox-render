@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SønSpot — 3D Shadow Viewer (Test)</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: monospace;
+        background: #0d1117;
+        color: #e6edf3;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      #scene-container { flex: 1; position: relative; overflow: hidden; }
+      canvas { display: block; }
+      #controls {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        background: rgba(13,17,23,0.92); padding: 14px 24px;
+        display: flex; align-items: center; gap: 20px; z-index: 100;
+      }
+      .ctrl-group { display: flex; flex-direction: column; gap: 4px; }
+      .ctrl-label { font-size: 10px; text-transform: uppercase; color: #8b949e; }
+      .ctrl-value { font-size: 20px; font-weight: 500; color: #FFD166; }
+      #time-slider { width: 280px; }
+      #shadow-opacity-slider { width: 100px; }
+      .slider-track { position: relative; width: 280px; height: 20px; display: flex; align-items: center; }
+      .slider-track input[type="range"] { width: 100%; }
+      .sun-marker { position: absolute; top: -2px; width: 2px; height: 8px; background: #FFD166; border-radius: 1px; pointer-events: none; opacity: 0.6; }
+      .sun-marker-label { position: absolute; top: -14px; font-size: 8px; color: #8b949e; white-space: nowrap; transform: translateX(-50%); }
+      #play-btn { width: 36px; height: 36px; border-radius: 50%; border: 2px solid #FFD166; background: transparent; color: #FFD166; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+      #sun-status { font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 12px; white-space: nowrap; }
+      #sun-status.in-sun { background: rgba(255,209,102,0.15); color: #FFD166; border: 1px solid rgba(255,209,102,0.3); }
+      #sun-status.in-shadow { background: rgba(139,148,158,0.15); color: #8b949e; border: 1px solid rgba(139,148,158,0.3); }
+      #loading { position: fixed; inset: 0; background: #0d1117; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; transition: opacity 0.5s; }
+      #loading.hidden { opacity: 0; pointer-events: none; }
+      #loading h1 { font-size: 18px; color: #FFD166; margin-bottom: 8px; }
+      #loading p { font-size: 12px; color: #8b949e; }
+      .spacer { flex: 1; }
+      #date-picker { font-size: 12px; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; }
+      #back-btn { position: fixed; top: 16px; left: 16px; z-index: 200; font-size: 12px; color: #FFD166; background: rgba(13,17,23,0.85); border: 1px solid rgba(255,209,102,0.25); border-radius: 6px; padding: 6px 14px; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <a id="back-btn" href="test-map.html">← Back to Map</a>
+    <div id="loading"><h1>SønSpot</h1><p>Loading terrain…</p></div>
+    <div id="scene-container"></div>
+    <div id="controls">
+      <div class="ctrl-group"><span class="ctrl-label">Time</span><span class="ctrl-value" id="time-display">12:00</span></div>
+      <button id="play-btn" title="Play sunrise → sunset">▶</button>
+      <div class="ctrl-group"><span class="ctrl-label">Scrub</span><div class="slider-track" id="slider-track"><input type="range" id="time-slider" min="0" max="1439" value="720" /></div></div>
+      <div class="ctrl-group"><span class="ctrl-label">Date</span><input type="date" id="date-picker" /></div>
+      <span id="sun-status" class="in-sun">☀ IN SUN</span>
+      <div class="spacer"></div>
+      <div class="ctrl-group"><span class="ctrl-label">Shadow</span><input type="range" id="shadow-opacity-slider" min="0" max="100" value="70" /></div>
+    </div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./node_modules/three/build/three.module.js",
+          "three/addons/": "./node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+    <script src="node_modules/suncalc/suncalc.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
