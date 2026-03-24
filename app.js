@@ -450,4 +450,13 @@
     updateSunDial();
     loadDsm();
   });
+
+  // Fallback: if map doesn't load within 3 seconds, load DSM anyway
+  setTimeout(() => {
+    if (!dsmPixels) {
+      console.log("Map load timeout - loading DSM anyway");
+      updateSunDial();
+      loadDsm();
+    }
+  }, 3000);
 })();
