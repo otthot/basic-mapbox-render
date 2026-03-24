@@ -41,9 +41,9 @@
   const shadowCtx = shadowCanvas.getContext("2d");
 
   function resizeShadowCanvas() {
-    const mapEl = document.getElementById("map");
-    const w = mapEl.clientWidth;
-    const h = mapEl.clientHeight;
+    const wrap = document.getElementById("map-wrap");
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
     if (shadowCanvas.width !== w || shadowCanvas.height !== h) {
       shadowCanvas.width = w;
       shadowCanvas.height = h;
