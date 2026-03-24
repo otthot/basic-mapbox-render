@@ -1,6 +1,9 @@
 // app.js — SønSpot 3D Shadow Viewer
 // Three.js terrain renderer with SunCalc-driven directional lighting
 
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
 (async function () {
   'use strict';
 
@@ -86,7 +89,7 @@
   camera.lookAt(0, 0, 0);
 
   // OrbitControls
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI / 2.05;
