@@ -279,41 +279,67 @@
     terrain.receiveShadow = true;
     scene.add(terrain);
 
+    // Base plate to close the bottom of the terrain
+    var baseGeo = new THREE.BoxGeometry(WORLD_SIZE + 20, 4, WORLD_SIZE + 20);
+    var baseMat = new THREE.MeshStandardMaterial({
+      color: 0x2a2d35,
+      roughness: 0.9,
+      metalness: 0.0,
+    });
+    var base = new THREE.Mesh(baseGeo, baseMat);
+    base.position.y = -2;
+    base.receiveShadow = true;
+    scene.add(base);
+
     const yOffset = -(minH + (maxH - minH) * 0.5) + 20;
     scene.position.y = yOffset;
   }
 
   // ── Target Marker ───────────────────────────────────────────────────────
 
+  let markerGroup = null;
+
   function placeTargetMarker(minH) {
     const pos = lngLatToWorld(TARGET_LNG, TARGET_LAT, dsmMeta);
     const terrainY = getHeightAtWorld(pos.x, pos.z) - minH;
 
-    const geo = new THREE.CylinderGeometry(2.5, 2.5, 6, 16);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xFFD166,
-      emissive: 0xFFD166,
-      emissiveIntensity: 0.8,
-      roughness: 0.3,
-      metalness: 0.1,
-    });
-    targetMarker = new THREE.Mesh(geo, mat);
-    targetMarker.position.set(pos.x, terrainY + 3, pos.z);
-    targetMarker.castShadow = false;
-    targetMarker.receiveShadow = false;
-    scene.add(targetMarker);
+    markerGroup = new THREE.Group();
+    markerGroup.position.set(pos.x, terrainY, pos.z);
 
-    const ringGeo = new THREE.RingGeometry(4, 6, 32);
+    // Main pin — tall cylinder so it stands above buildings
+    const pinGeo = new THREE.CylinderGeometry(1.5, 1.5, 20, 16);
+    const pinMat = new THREE.MeshBasicMaterial({ color: 0xFFD166 });
+    const pin = new THREE.Mesh(pinGeo, pinMat);
+    pin.position.y = 10;
+    markerGroup.add(pin);
+
+    // Glowing sphere on top
+    const sphereGeo = new THREE.SphereGeometry(4, 24, 24);
+    const sphereMat = new THREE.MeshBasicMaterial({ color: 0xFFD166 });
+    targetMarker = new THREE.Mesh(sphereGeo, sphereMat);
+    targetMarker.position.y = 22;
+    markerGroup.add(targetMarker);
+
+    // Ground ring
+    const ringGeo = new THREE.RingGeometry(5, 7, 32);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xFFD166,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.5,
       side: THREE.DoubleSide,
     });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(pos.x, terrainY + 0.5, pos.z);
-    scene.add(ring);
+    ring.position.y = 0.5;
+    markerGroup.add(ring);
+
+    // Point light at marker for glow effect
+    const markerLight = new THREE.PointLight(0xFFD166, 0.6, 40);
+    markerLight.position.y = 22;
+    markerGroup.add(markerLight);
+
+    markerGroup.castShadow = false;
+    scene.add(markerGroup);
 
     return { x: pos.x, y: terrainY, z: pos.z };
   }
@@ -368,7 +394,7 @@
   // ── Shadow Detection ────────────────────────────────────────────────────
 
   function checkTargetShadow() {
-    if (!targetMarker || !renderer) return;
+    if (!markerGroup || !renderer || !terrain) return;
 
     const minutes = getCurrentMinute();
     const d = minutesToDate(minutes);
@@ -379,28 +405,27 @@
       return;
     }
 
-    // Raycaster from sun toward target
-    const markerWorldPos = new THREE.Vector3();
-    targetMarker.getWorldPosition(markerWorldPos);
+    // Check at ground level of the marker (where a person would stand)
+    var checkPoint = new THREE.Vector3();
+    markerGroup.getWorldPosition(checkPoint);
+    checkPoint.y += 1; // 1m above ground (person height sample)
 
-    const sunWorldPos = new THREE.Vector3();
+    var sunWorldPos = new THREE.Vector3();
     sunSphere.getWorldPosition(sunWorldPos);
 
-    const dir = new THREE.Vector3().subVectors(markerWorldPos, sunWorldPos).normalize();
-    const raycaster = new THREE.Raycaster(sunWorldPos, dir, 0, SUN_DISTANCE * 2);
+    var dir = new THREE.Vector3().subVectors(checkPoint, sunWorldPos).normalize();
+    var raycaster = new THREE.Raycaster(sunWorldPos, dir, 0, SUN_DISTANCE * 2);
 
-    const intersects = raycaster.intersectObject(terrain, false);
+    var intersects = raycaster.intersectObject(terrain, false);
     if (intersects.length === 0) {
       setSunBadge(true, false);
       return;
     }
 
-    const hitPoint = intersects[0].point;
-    const distToHit = sunWorldPos.distanceTo(hitPoint);
-    const distToMarker = sunWorldPos.distanceTo(markerWorldPos);
+    var distToHit = sunWorldPos.distanceTo(intersects[0].point);
+    var distToMarker = sunWorldPos.distanceTo(checkPoint);
 
-    const inSun = distToHit >= distToMarker - 5;
-    setSunBadge(inSun, false);
+    setSunBadge(distToHit >= distToMarker - 3, false);
   }
 
   function setSunBadge(inSun, isNight) {
@@ -472,10 +497,8 @@
   function pulseMarker(dt) {
     if (!targetMarker) return;
     pulseTime += dt;
-    const s = 1 + 0.15 * Math.sin(pulseTime * 3);
-    targetMarker.scale.set(s, 1, s);
-    const emI = 0.5 + 0.4 * Math.sin(pulseTime * 3);
-    targetMarker.material.emissiveIntensity = emI;
+    const s = 1 + 0.2 * Math.sin(pulseTime * 3);
+    targetMarker.scale.set(s, s, s);
   }
 
   // ── Render Loop ─────────────────────────────────────────────────────────
