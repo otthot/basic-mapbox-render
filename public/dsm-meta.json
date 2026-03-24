@@ -10,7 +10,7 @@
   },
   "centerLat": 55.69151222577356,
   "centerLng": 12.558648339901735,
-  "minHeight": 7.55564022064209,
-  "maxHeight": 57.76392364501953,
+  "minHeight": 5,
+  "maxHeight": 25,
   "encoding": "terrarium"
 }
