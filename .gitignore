@@ -1,1 +1,4 @@
 .env
+public/env.js
+public/dsm-norrebro.tiff
+node_modules/
