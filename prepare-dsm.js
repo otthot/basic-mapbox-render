@@ -51,7 +51,7 @@ function getEnv(key) {
   return "";
 }
 
-const DF_TOKEN = getEnv("DATAFORSYNING_API_TOKEN");
+const DF_TOKEN = getEnv("DATAFORSYNING_TOKEN");
 
 function buildWcsUrl() {
   if (!DF_TOKEN) {
@@ -143,7 +143,7 @@ async function main() {
   if (!WCS_URL) {
     console.log("\n  No DATAFORSYNING_API_TOKEN in .env");
     console.log("  → Get a token at https://dataforsyningen.dk → Min profil → API-nøgler");
-    console.log("  → Add to .env: DATAFORSYNING_API_TOKEN=XXX");
+    console.log("  → Add to .env: DATAFORSYNING_TOKEN=XXX");
     console.log("  → Falling back to synthetic DSM for now…\n");
     generateSyntheticDsm(TIFF_PATH, WIDTH, HEIGHT);
   } else {
