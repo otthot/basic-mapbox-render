@@ -3,35 +3,47 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SønSpot — Shadow Engine Prototype</title>
-    <link
-      href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css"
-      rel="stylesheet"
-    />
+    <title>SønSpot — 3D Shadow Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; height: 100vh; display: flex; flex-direction: column; }
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-      #map-wrap { flex: 1; position: relative; }
-      #map { position: absolute; inset: 0; }
-
-      /* Shadow canvas overlaid on map — sibling of map div, same stacking context */
-      #shadow-canvas {
-        position: absolute;
-        top: 0; left: 0;
-        pointer-events: none;
-        z-index: 10;
+      body {
+        font-family: 'DM Mono', monospace;
+        background: #0d1117;
+        color: #e6edf3;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
       }
 
-      /* Control panel */
+      #scene-container {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+
+      canvas { display: block; }
+
+      /* ---------- Control Panel ---------- */
       #controls {
-        background: #1a1a1a;
-        border-top: 1px solid #333;
-        padding: 16px 24px;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(13, 17, 23, 0.92);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(255, 209, 102, 0.15);
+        padding: 14px 24px;
         display: flex;
         align-items: center;
-        gap: 24px;
+        gap: 20px;
         flex-wrap: wrap;
+        z-index: 100;
       }
 
       .ctrl-group {
@@ -40,134 +52,252 @@
         gap: 4px;
       }
 
+      .ctrl-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
       .ctrl-label {
-        font-size: 11px;
+        font-size: 10px;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #888;
+        letter-spacing: 0.1em;
+        color: #8b949e;
+        font-family: 'DM Mono', monospace;
       }
 
       .ctrl-value {
-        font-size: 15px;
-        font-weight: 600;
-        color: #f0c040;
+        font-size: 20px;
+        font-weight: 500;
+        color: #FFD166;
+        font-family: 'DM Mono', monospace;
+        letter-spacing: 0.02em;
       }
 
-      #time-slider {
+      /* Slider styling */
+      input[type="range"] {
         -webkit-appearance: none;
         appearance: none;
-        width: 260px;
         height: 4px;
-        background: #444;
+        background: #21262d;
         border-radius: 2px;
         outline: none;
         cursor: pointer;
+        position: relative;
       }
 
-      #time-slider::-webkit-slider-thumb {
+      input[type="range"]::-webkit-slider-thumb {
         -webkit-appearance: none;
-        width: 16px; height: 16px;
+        width: 14px;
+        height: 14px;
         border-radius: 50%;
-        background: #f0c040;
+        background: #FFD166;
         cursor: pointer;
+        box-shadow: 0 0 6px rgba(255, 209, 102, 0.5);
       }
 
-      /* Sun dial */
-      #sun-dial-wrap {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-      }
-
-      #sun-dial {
-        width: 64px; height: 64px;
-      }
-
-      .sun-stats {
-        display: flex;
-        gap: 16px;
-      }
-
-      .sun-stat {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 2px;
-      }
-
-      .stat-val {
-        font-size: 14px;
-        font-weight: 700;
-        color: #f0c040;
-      }
-
-      .stat-lbl {
-        font-size: 10px;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-
-      #status {
-        font-size: 12px;
-        color: #666;
-        margin-left: auto;
-      }
-
-      #compute-btn {
-        background: #f0c040;
-        color: #0f0f0f;
+      input[type="range"]::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #FFD166;
+        cursor: pointer;
         border: none;
-        padding: 8px 18px;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 700;
-        cursor: pointer;
-        letter-spacing: 0.04em;
+        box-shadow: 0 0 6px rgba(255, 209, 102, 0.5);
       }
 
-      #compute-btn:hover { background: #ffd84d; }
-      #compute-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
+      #time-slider { width: 280px; }
+      #shadow-opacity-slider { width: 100px; }
+
+      /* Slider track with sunrise/sunset markers */
+      .slider-track {
+        position: relative;
+        width: 280px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+      }
+
+      .slider-track input[type="range"] { width: 100%; }
+
+      .sun-marker {
+        position: absolute;
+        top: -2px;
+        width: 2px;
+        height: 8px;
+        background: #FFD166;
+        border-radius: 1px;
+        pointer-events: none;
+        opacity: 0.6;
+      }
+
+      .sun-marker-label {
+        position: absolute;
+        top: -14px;
+        font-size: 8px;
+        color: #8b949e;
+        font-family: 'DM Mono', monospace;
+        white-space: nowrap;
+        transform: translateX(-50%);
+      }
+
+      /* Date input */
+      #date-picker {
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        background: #161b22;
+        color: #e6edf3;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+
+      #date-picker::-webkit-calendar-picker-indicator {
+        filter: invert(0.7);
+        cursor: pointer;
+      }
+
+      /* Play button */
+      #play-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: 2px solid #FFD166;
+        background: transparent;
+        color: #FFD166;
+        font-size: 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s, color 0.2s;
+        flex-shrink: 0;
+      }
+
+      #play-btn:hover {
+        background: #FFD166;
+        color: #0d1117;
+      }
+
+      /* Sun status badge */
+      #sun-status {
+        font-size: 12px;
+        font-weight: 500;
+        font-family: 'DM Mono', monospace;
+        padding: 4px 10px;
+        border-radius: 12px;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+      }
+
+      #sun-status.in-sun {
+        background: rgba(255, 209, 102, 0.15);
+        color: #FFD166;
+        border: 1px solid rgba(255, 209, 102, 0.3);
+      }
+
+      #sun-status.in-shadow {
+        background: rgba(139, 148, 158, 0.15);
+        color: #8b949e;
+        border: 1px solid rgba(139, 148, 158, 0.3);
+      }
+
+      /* Loading overlay */
+      #loading {
+        position: fixed;
+        inset: 0;
+        background: #0d1117;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        transition: opacity 0.5s;
+      }
+
+      #loading.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #loading h1 {
+        font-family: 'DM Mono', monospace;
+        font-weight: 300;
+        font-size: 24px;
+        color: #FFD166;
+        margin-bottom: 8px;
+      }
+
+      #loading p {
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        color: #8b949e;
+      }
+
+      .spacer { flex: 1; }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        #controls { padding: 10px 12px; gap: 10px; }
+        #time-slider, .slider-track { width: 160px; }
+        .ctrl-value { font-size: 16px; }
+      }
     </style>
   </head>
   <body>
-    <div id="map-wrap">
-      <div id="map"></div>
-      <canvas id="shadow-canvas"></canvas>
+    <div id="loading">
+      <h1>SønSpot</h1>
+      <p>Loading terrain…</p>
     </div>
 
+    <div id="scene-container"></div>
+
     <div id="controls">
-      <!-- Time slider -->
+      <!-- Time display -->
       <div class="ctrl-group">
-        <span class="ctrl-label">Time of day</span>
-        <input type="range" id="time-slider" min="0" max="1439" value="720" />
+        <span class="ctrl-label">Time</span>
         <span class="ctrl-value" id="time-display">12:00</span>
       </div>
 
-      <!-- Sun dial -->
-      <div id="sun-dial-wrap">
-        <canvas id="sun-dial" width="64" height="64"></canvas>
-        <div class="sun-stats">
-          <div class="sun-stat">
-            <span class="stat-val" id="stat-az">—</span>
-            <span class="stat-lbl">Azimuth</span>
-          </div>
-          <div class="sun-stat">
-            <span class="stat-val" id="stat-alt">—</span>
-            <span class="stat-lbl">Altitude</span>
-          </div>
+      <!-- Play / Pause -->
+      <button id="play-btn" title="Play sunrise → sunset">▶</button>
+
+      <!-- Time slider with sunrise/sunset markers -->
+      <div class="ctrl-group">
+        <span class="ctrl-label">Scrub</span>
+        <div class="slider-track" id="slider-track">
+          <input type="range" id="time-slider" min="0" max="1439" value="720" />
         </div>
       </div>
 
-      <button id="compute-btn">Compute Shadows</button>
+      <!-- Date picker -->
+      <div class="ctrl-group">
+        <span class="ctrl-label">Date</span>
+        <input type="date" id="date-picker" />
+      </div>
 
-      <span id="status">Load the DSM first with: node prepare-dsm.js</span>
+      <!-- Sun status -->
+      <span id="sun-status" class="in-sun">☀ IN SUN</span>
+
+      <div class="spacer"></div>
+
+      <!-- Shadow opacity -->
+      <div class="ctrl-group">
+        <span class="ctrl-label">Shadow</span>
+        <input type="range" id="shadow-opacity-slider" min="0" max="100" value="70" />
+      </div>
     </div>
 
-    <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
     <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
-    <script src="public/env.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>
