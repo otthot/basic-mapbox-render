@@ -224,9 +224,33 @@
       #loading h1 {
         font-family: 'DM Mono', monospace;
         font-weight: 300;
-        font-size: 24px;
+        font-size: 18px;
         color: #FFD166;
         margin-bottom: 8px;
+      }
+
+      #back-btn {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        z-index: 200;
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        font-weight: 400;
+        color: #FFD166;
+        background: rgba(13, 17, 23, 0.85);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 209, 102, 0.25);
+        border-radius: 6px;
+        padding: 6px 14px;
+        text-decoration: none;
+        transition: background 0.2s, color 0.2s;
+      }
+
+      #back-btn:hover {
+        background: #FFD166;
+        color: #0d1117;
       }
 
       #loading p {
@@ -246,6 +270,8 @@
     </style>
   </head>
   <body>
+    <a id="back-btn" href="map.html">← Back to Map</a>
+
     <div id="loading">
       <h1>SønSpot</h1>
       <p>Loading terrain…</p>

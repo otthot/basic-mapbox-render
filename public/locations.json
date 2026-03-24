@@ -1,0 +1,6 @@
+[
+  { "id": 1, "name": "Nørrebro Torv", "lat": 55.6914, "lng": 12.5588 },
+  { "id": 2, "name": "Blågårds Plads", "lat": 55.6928, "lng": 12.5568 },
+  { "id": 3, "name": "Stengade", "lat": 55.6905, "lng": 12.5558 },
+  { "id": 4, "name": "Elmegade", "lat": 55.6920, "lng": 12.5610 }
+]

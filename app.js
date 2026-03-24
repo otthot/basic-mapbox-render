@@ -7,9 +7,28 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 (async function () {
   'use strict';
 
+  // ── Load location from URL parameter ──────────────────────────────────
+  const params = new URLSearchParams(window.location.search);
+  const locationId = params.get('location');
+  let TARGET_LAT = 55.69162107686692;
+  let TARGET_LNG = 12.558723441754955;
+  let locationName = 'Nørrebro';
+
+  if (locationId) {
+    try {
+      const locations = await fetch('public/locations.json').then(r => r.json());
+      const loc = locations.find(l => String(l.id) === locationId);
+      if (loc) {
+        TARGET_LAT = loc.lat;
+        TARGET_LNG = loc.lng;
+        locationName = loc.name;
+      }
+    } catch (_) { /* fall through to defaults */ }
+  }
+
+  document.title = 'SønSpot — ' + locationName;
+
   // ── Config ──────────────────────────────────────────────────────────────
-  const TARGET_LAT = 55.69162107686692;
-  const TARGET_LNG = 12.558723441754955;
   const DSM_URL    = 'public/dsm-norrebro.png';
   const META_URL   = 'public/dsm-meta.json';
   const SUN_DIST   = 200;
@@ -149,42 +168,104 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   glowSprite.scale.set(40, 40, 1);
   scene.add(glowSprite);
 
-  // ── Build Terrain Mesh ──────────────────────────────────────────────────
+  // ── Detect buildings vs ground ──────────────────────────────────────────
+  const BUILDING_THRESHOLD = 3; // metres above min → classified as building
+  const groundLevel = minH;
+  const heightScale = 1.0;
+
+  const isBuilding = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    isBuilding[i] = (heights[i] - minH > BUILDING_THRESHOLD) ? 1 : 0;
+  }
+
+  // Flood-fill to cluster contiguous building pixels
+  const clusterMap = new Int32Array(W * H).fill(-1);
+  const clusters = []; // each: { pixels: [index…], minCol, maxCol, minRow, maxRow, sumH, count }
+  let clusterId = 0;
+
+  for (let i = 0; i < W * H; i++) {
+    if (!isBuilding[i] || clusterMap[i] >= 0) continue;
+    const cluster = { pixels: [], minCol: W, maxCol: 0, minRow: H, maxRow: 0, sumH: 0, count: 0 };
+    const stack = [i];
+    while (stack.length) {
+      const idx = stack.pop();
+      if (idx < 0 || idx >= W * H || clusterMap[idx] >= 0 || !isBuilding[idx]) continue;
+      clusterMap[idx] = clusterId;
+      const c = idx % W;
+      const r = Math.floor(idx / W);
+      cluster.pixels.push(idx);
+      cluster.sumH += heights[idx];
+      cluster.count++;
+      if (c < cluster.minCol) cluster.minCol = c;
+      if (c > cluster.maxCol) cluster.maxCol = c;
+      if (r < cluster.minRow) cluster.minRow = r;
+      if (r > cluster.maxRow) cluster.maxRow = r;
+      if (c > 0)     stack.push(idx - 1);
+      if (c < W - 1) stack.push(idx + 1);
+      if (r > 0)     stack.push(idx - W);
+      if (r < H - 1) stack.push(idx + W);
+    }
+    clusters.push(cluster);
+    clusterId++;
+  }
+
+  // ── Build Ground Mesh (smooth terrain, building pixels clamped to ground) ──
   const planeGeo = new THREE.PlaneGeometry(worldW, worldH, W - 1, H - 1);
-  planeGeo.rotateX(-Math.PI / 2); // lay flat in XZ plane
+  planeGeo.rotateX(-Math.PI / 2);
 
   const posAttr = planeGeo.attributes.position;
-  const groundLevel = minH;
-  const heightScale = 1.0; // 1:1 metre scale
+
+  // Compute a smooth ground height for building pixels using neighbour averaging
+  const groundHeights = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    if (!isBuilding[i]) {
+      groundHeights[i] = heights[i];
+    } else {
+      groundHeights[i] = minH;
+    }
+  }
+
+  // Spread ground heights into building areas by iterative diffusion (3 passes)
+  for (let pass = 0; pass < 4; pass++) {
+    for (let r = 0; r < H; r++) {
+      for (let c = 0; c < W; c++) {
+        const idx = r * W + c;
+        if (!isBuilding[idx]) continue;
+        let sum = 0, cnt = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nr >= H || nc < 0 || nc >= W) continue;
+            const ni = nr * W + nc;
+            if (!isBuilding[ni] || pass > 0) {
+              sum += groundHeights[ni];
+              cnt++;
+            }
+          }
+        }
+        if (cnt > 0) groundHeights[idx] = sum / cnt;
+      }
+    }
+  }
 
   for (let i = 0; i < posAttr.count; i++) {
-    // PlaneGeometry after rotateX(-PI/2): X is horizontal, Y is up, Z is horizontal
-    // Vertices are laid out row-by-row: col varies first (X), then row (Z)
     const col = i % W;
     const row = Math.floor(i / W);
-    const h = (heights[row * W + col] - groundLevel) * heightScale;
+    const h = (groundHeights[row * W + col] - groundLevel) * heightScale;
     posAttr.setY(i, h);
   }
 
   planeGeo.computeVertexNormals();
 
-  // Color vertices: ground vs elevated
+  // Color ground vertices uniformly
+  const groundColor = new THREE.Color(0xd4c5a9);
+  const buildingColor = new THREE.Color(0x8a9bae);
   const colors = new Float32Array(posAttr.count * 3);
-  const groundColor = new THREE.Color(0xd4c5a9); // warm sandstone
-  const buildingColor = new THREE.Color(0x8a9bae); // cool blue-grey
-  const heightRange = maxH - minH;
-
   for (let i = 0; i < posAttr.count; i++) {
-    const col = i % W;
-    const row = Math.floor(i / W);
-    const h = heights[row * W + col];
-    const t = Math.min(1, Math.max(0, (h - minH - 2) / (heightRange * 0.3)));
-    const c = new THREE.Color().lerpColors(groundColor, buildingColor, t);
-    colors[i * 3]     = c.r;
-    colors[i * 3 + 1] = c.g;
-    colors[i * 3 + 2] = c.b;
+    colors[i * 3]     = groundColor.r;
+    colors[i * 3 + 1] = groundColor.g;
+    colors[i * 3 + 2] = groundColor.b;
   }
-
   planeGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const terrainMat = new THREE.MeshLambertMaterial({
@@ -193,9 +274,46 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   });
 
   const terrain = new THREE.Mesh(planeGeo, terrainMat);
-  terrain.castShadow = true;
+  terrain.castShadow = false;
   terrain.receiveShadow = true;
   scene.add(terrain);
+
+  // ── Build Box Geometries for Each Building Cluster ────────────────────
+  const buildingMat = new THREE.MeshLambertMaterial({ color: buildingColor });
+  const buildingMeshes = [];
+  const MIN_CLUSTER_PIXELS = 4;
+
+  for (const cluster of clusters) {
+    if (cluster.count < MIN_CLUSTER_PIXELS) continue;
+
+    const avgH = cluster.sumH / cluster.count;
+    const buildingHeight = (avgH - groundLevel) * heightScale;
+
+    const cMinX = cluster.minCol * meta.metersPerPixel - halfW;
+    const cMaxX = (cluster.maxCol + 1) * meta.metersPerPixel - halfW;
+    const cMinZ = cluster.minRow * meta.metersPerPixel - halfH;
+    const cMaxZ = (cluster.maxRow + 1) * meta.metersPerPixel - halfH;
+
+    const bw = cMaxX - cMinX;
+    const bd = cMaxZ - cMinZ;
+    const cx = (cMinX + cMaxX) / 2;
+    const cz = (cMinZ + cMaxZ) / 2;
+
+    // Sample ground height at building center
+    const gcol = Math.round((cx + halfW) / meta.metersPerPixel);
+    const grow = Math.round((cz + halfH) / meta.metersPerPixel);
+    const gi = Math.max(0, Math.min(W * H - 1, grow * W + gcol));
+    const baseH = (groundHeights[gi] - groundLevel) * heightScale;
+
+    const boxH = Math.max(1, buildingHeight - baseH);
+    const boxGeo = new THREE.BoxGeometry(bw, boxH, bd);
+    const box = new THREE.Mesh(boxGeo, buildingMat);
+    box.position.set(cx, baseH + boxH / 2, cz);
+    box.castShadow = true;
+    box.receiveShadow = true;
+    scene.add(box);
+    buildingMeshes.push(box);
+  }
 
   // ── Target Location Marker ─────────────────────────────────────────────
   function lngLatToWorld(lng, lat) {
@@ -342,7 +460,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
       .normalize();
 
     const raycaster = new THREE.Raycaster(markerPos, sunDir, 0, SUN_DIST * 2);
-    const intersects = raycaster.intersectObject(terrain);
+    const allShadowCasters = [terrain, ...buildingMeshes];
+    const intersects = raycaster.intersectObjects(allShadowCasters);
 
     if (intersects.length > 0) {
       sunStatusEl.textContent = '◑ IN SHADOW';
