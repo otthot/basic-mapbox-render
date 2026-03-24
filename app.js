@@ -7,9 +7,30 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 (async function () {
   'use strict';
 
+  // ── Load location from URL params or fall back to defaults ────────────
+  let TARGET_LAT = 55.69162107686692;
+  let TARGET_LNG = 12.558723441754955;
+  let locationName = '3D Shadow Viewer';
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const locationId = urlParams.get('location');
+
+  if (locationId) {
+    try {
+      const locRes = await fetch('public/locations.json');
+      const locations = await locRes.json();
+      const loc = locations.find(l => String(l.id) === locationId);
+      if (loc) {
+        TARGET_LAT = loc.lat;
+        TARGET_LNG = loc.lng;
+        locationName = loc.name;
+      }
+    } catch (e) { /* use defaults */ }
+  }
+
+  document.title = `SønSpot — ${locationName}`;
+
   // ── Config ──────────────────────────────────────────────────────────────
-  const TARGET_LAT = 55.69162107686692;
-  const TARGET_LNG = 12.558723441754955;
   const DSM_URL    = 'public/dsm-norrebro.png';
   const META_URL   = 'public/dsm-meta.json';
   const SUN_DIST   = 200;
@@ -149,46 +170,86 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   glowSprite.scale.set(40, 40, 1);
   scene.add(glowSprite);
 
-  // ── Build Terrain Mesh ──────────────────────────────────────────────────
+  // ── Detect Buildings & Build Geometry ───────────────────────────────────
+  const groundLevel = minH;
+  const heightScale = 1.0;
+  const BUILDING_THRESHOLD = 3; // metres above ground to classify as building
+
+  const isBuilding = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    isBuilding[i] = (heights[i] - minH) > BUILDING_THRESHOLD ? 1 : 0;
+  }
+
+  // Flood-fill to label connected building clusters
+  const labels = new Int32Array(W * H);
+  let nextLabel = 1;
+  const clusters = []; // [{label, minCol, maxCol, minRow, maxRow, totalH, count}]
+
+  function floodFill(startIdx) {
+    const label = nextLabel++;
+    const queue = [startIdx];
+    labels[startIdx] = label;
+    let minCol = startIdx % W, maxCol = minCol;
+    let minRow = Math.floor(startIdx / W), maxRow = minRow;
+    let totalH = 0, count = 0;
+
+    while (queue.length > 0) {
+      const idx = queue.pop();
+      const col = idx % W;
+      const row = Math.floor(idx / W);
+
+      if (col < minCol) minCol = col;
+      if (col > maxCol) maxCol = col;
+      if (row < minRow) minRow = row;
+      if (row > maxRow) maxRow = row;
+      totalH += heights[idx];
+      count++;
+
+      const neighbors = [];
+      if (col > 0) neighbors.push(idx - 1);
+      if (col < W - 1) neighbors.push(idx + 1);
+      if (row > 0) neighbors.push(idx - W);
+      if (row < H - 1) neighbors.push(idx + W);
+
+      for (const n of neighbors) {
+        if (isBuilding[n] && !labels[n]) {
+          labels[n] = label;
+          queue.push(n);
+        }
+      }
+    }
+
+    clusters.push({ label, minCol, maxCol, minRow, maxRow, totalH, count });
+  }
+
+  for (let i = 0; i < W * H; i++) {
+    if (isBuilding[i] && !labels[i]) floodFill(i);
+  }
+
+  // ── Build Ground Plane (smooth, buildings flattened to ground) ─────────
   const planeGeo = new THREE.PlaneGeometry(worldW, worldH, W - 1, H - 1);
-  planeGeo.rotateX(-Math.PI / 2); // lay flat in XZ plane
+  planeGeo.rotateX(-Math.PI / 2);
 
   const posAttr = planeGeo.attributes.position;
-  const groundLevel = minH;
-  const heightScale = 1.0; // 1:1 metre scale
 
   for (let i = 0; i < posAttr.count; i++) {
-    // PlaneGeometry after rotateX(-PI/2): X is horizontal, Y is up, Z is horizontal
-    // Vertices are laid out row-by-row: col varies first (X), then row (Z)
     const col = i % W;
     const row = Math.floor(i / W);
-    const h = (heights[row * W + col] - groundLevel) * heightScale;
+    const idx = row * W + col;
+    // For building pixels, set ground to local minimum near the building base
+    const h = isBuilding[idx]
+      ? 0 // flat ground under buildings
+      : (heights[idx] - groundLevel) * heightScale;
     posAttr.setY(i, h);
   }
 
   planeGeo.computeVertexNormals();
 
-  // Color vertices: ground vs elevated
-  const colors = new Float32Array(posAttr.count * 3);
-  const groundColor = new THREE.Color(0xd4c5a9); // warm sandstone
-  const buildingColor = new THREE.Color(0x8a9bae); // cool blue-grey
-  const heightRange = maxH - minH;
-
-  for (let i = 0; i < posAttr.count; i++) {
-    const col = i % W;
-    const row = Math.floor(i / W);
-    const h = heights[row * W + col];
-    const t = Math.min(1, Math.max(0, (h - minH - 2) / (heightRange * 0.3)));
-    const c = new THREE.Color().lerpColors(groundColor, buildingColor, t);
-    colors[i * 3]     = c.r;
-    colors[i * 3 + 1] = c.g;
-    colors[i * 3 + 2] = c.b;
-  }
-
-  planeGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const groundColor = new THREE.Color(0xd4c5a9);
+  const buildingColor = new THREE.Color(0x8a9bae);
 
   const terrainMat = new THREE.MeshLambertMaterial({
-    vertexColors: true,
+    color: groundColor,
     side: THREE.FrontSide,
   });
 
@@ -196,6 +257,37 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   terrain.castShadow = true;
   terrain.receiveShadow = true;
   scene.add(terrain);
+
+  // ── Create Building Boxes ─────────────────────────────────────────────
+  const MIN_CLUSTER_PIXELS = 4;
+  const buildingMat = new THREE.MeshLambertMaterial({ color: buildingColor });
+  const buildingMeshes = [];
+
+  for (const cluster of clusters) {
+    if (cluster.count < MIN_CLUSTER_PIXELS) continue;
+
+    const avgH = cluster.totalH / cluster.count;
+    const buildingH = (avgH - groundLevel) * heightScale;
+    if (buildingH < 1) continue;
+
+    const colSpan = cluster.maxCol - cluster.minCol + 1;
+    const rowSpan = cluster.maxRow - cluster.minRow + 1;
+    const boxW = colSpan * meta.metersPerPixel;
+    const boxD = rowSpan * meta.metersPerPixel;
+
+    const centerCol = (cluster.minCol + cluster.maxCol) / 2;
+    const centerRow = (cluster.minRow + cluster.maxRow) / 2;
+    const wx = centerCol * meta.metersPerPixel - halfW;
+    const wz = centerRow * meta.metersPerPixel - halfH;
+
+    const boxGeo = new THREE.BoxGeometry(boxW, buildingH, boxD);
+    const box = new THREE.Mesh(boxGeo, buildingMat);
+    box.position.set(wx, buildingH / 2, wz);
+    box.castShadow = true;
+    box.receiveShadow = true;
+    scene.add(box);
+    buildingMeshes.push(box);
+  }
 
   // ── Target Location Marker ─────────────────────────────────────────────
   function lngLatToWorld(lng, lat) {
@@ -342,7 +434,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
       .normalize();
 
     const raycaster = new THREE.Raycaster(markerPos, sunDir, 0, SUN_DIST * 2);
-    const intersects = raycaster.intersectObject(terrain);
+    const allShadowCasters = [terrain, ...buildingMeshes];
+    const intersects = raycaster.intersectObjects(allShadowCasters);
 
     if (intersects.length > 0) {
       sunStatusEl.textContent = '◑ IN SHADOW';
