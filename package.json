@@ -1,0 +1,17 @@
+{
+  "name": "basic-mapbox-render",
+  "version": "1.0.0",
+  "description": "SønSpot shadow engine prototype",
+  "scripts": {
+    "prepare-dsm": "node prepare-dsm.js",
+    "dev": "npx serve . -p 3000"
+  },
+  "dependencies": {
+    "geotiff": "^2.1.3",
+    "sharp": "^0.33.5",
+    "suncalc": "^1.9.0"
+  },
+  "devDependencies": {
+    "serve": "^14.2.3"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "width": 250,
+  "height": 250,
+  "metersPerPixel": 2,
+  "bbox": {
+    "minX": 723407,
+    "minY": 6177237,
+    "maxX": 723907,
+    "maxY": 6177737
+  },
+  "centerLat": 55.69151222577356,
+  "centerLng": 12.558648339901735,
+  "minHeight": 7.55564022064209,
+  "maxHeight": 57.76392364501953,
+  "encoding": "terrarium"
+}
